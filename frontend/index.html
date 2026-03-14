@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Agent Audio Stream</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+        button { padding: 10px 20px; font-size: 16px; margin-right: 10px; cursor: pointer; }
+        #log { margin-top: 20px; padding: 10px; background: #f4f4f4; height: 200px; overflow-y: scroll; border-radius: 5px; font-family: monospace; }
+        .transcript { color: #0066cc; font-weight: bold; }
+        /* --- NEW: The Glowing Orb --- */
+        #orb-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 150px;
+            margin: 30px 0;
+        }
+        #orb {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            /* A nice ambient idle state */
+            background: linear-gradient(135deg, #e8eaed, #dadce0);
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+            transition: transform 0.05s linear, box-shadow 0.05s linear, background 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Live Agent Bidi-Stream 🎙️</h2>
+    <button id="startBtn">Connect & Start Talking</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <div id="orb-container">
+        <div id="orb"></div>
+    </div>
+    <div id="log"></div>
+
+    <script>
+        let websocket;
+        let audioContext;
+        let microphone;
+        let scriptProcessor;
+
+        let nextPlayTime = 0;
+        let activeSources = []; 
+
+        let userAnalyser;
+        let aiAnalyser;
+        let dataArrayUser;
+        let dataArrayAi;
+        let animationFrameId;
+        const orb = document.getElementById('orb');
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const logDiv = document.getElementById('log');
+
+        function log(message, className = '') {
+            const el = document.createElement('div');
+            el.innerHTML = message;
+            if (className) el.className = className;
+            logDiv.appendChild(el);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        async function startSession() {
+            try {
+                // --- NEW: Create AudioContext IMMEDIATELY on click ---
+                // This fixes the race condition AND satisfies strict browser autoplay rules
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                
+                if (audioContext.sampleRate !== 16000) {
+                    console.error(`🚨 BROWSER WARNING: AudioContext is running at ${audioContext.sampleRate}Hz, not 16000Hz! Gemini will reject this.`);
+                } else {
+                    console.log("✅ AudioContext successfully locked to 16000Hz");
+                }
+
+                // 1. Establish the WebSocket connection
+                websocket = new WebSocket("ws://localhost:8000/ws/stream");
+                websocket.binaryType = "arraybuffer"; 
+
+                websocket.onopen = async () => {
+                    log("WebSocket connected. Starting microphone...");
+                    visualize();
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    await startMicrophone();
+                };
+
+                // 2. Handle Downstream (Agent to User)
+                websocket.onmessage = async (event) => {
+                    if (typeof event.data === "string") {
+                        const msg = JSON.parse(event.data);
+                        if (msg.transcript) {
+                            log(`AI: ${msg.transcript}`, 'transcript');
+                        } else if (msg.status === "ai_interrupted") {
+                            log("AI was interrupted. Stopping audio playback.");
+                            activeSources.forEach(source => source.stop());
+                            activeSources = [];
+                            nextPlayTime = audioContext ? audioContext.currentTime : 0;
+                        }
+                    } else {
+                        // Handle binary audio data (playback)
+                        playAudioChunk(event.data);
+                    }
+                };
+
+                websocket.onclose = () => {
+                    log("WebSocket disconnected.");
+                };
+
+            } catch (err) {
+                log(`Error: ${err.message}`);
+            }
+        }
+
+        // 3. Handle Upstream (User to Agent)
+        async function startMicrophone() {
+            try {
+                // 1. Wait for the user to click "Allow"
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1, 
+                        sampleRate: 16000, 
+                        echoCancellation: true,
+                        noiseSuppression: true,
+
+                    }
+                });
+                
+                // Save the stream globally so we can turn the mic light off later!
+                microphone = stream;
+
+                const source = audioContext.createMediaStreamSource(stream);
+
+                // 3. Load the external worklet
+                await audioContext.audioWorklet.addModule(`pcm-worker.js?t=${Date.now()}`);
+                const workletNode = new AudioWorkletNode(audioContext, 'pcm-worker');
+
+                // 4. Listen for PCM data and send to Python
+                workletNode.port.onmessage = (event) => {
+                    const pcm16Buffer = event.data;
+                    
+                    // SAFEGUARD: Only send if the buffer actually has data! 
+                    // Sending a 0-byte frame will instantly crash the Gemini API with a 1007 error.
+                    if (websocket && websocket.readyState === WebSocket.OPEN && pcm16Buffer.byteLength > 0) {
+                        websocket.send(pcm16Buffer); 
+                    }
+                };
+
+                // 5. Connect the nodes
+                source.connect(workletNode);
+                workletNode.connect(audioContext.destination);
+
+                userAnalyser = audioContext.createAnalyser();
+                userAnalyser.fftSize = 256;
+                dataArrayUser = new Uint8Array(userAnalyser.frequencyBinCount);
+                source.connect(userAnalyser);
+
+            } catch (err) {
+                console.error("Microphone access denied:", err);
+                log(`Microphone Error: ${err.message}`);
+            }
+        }
+
+        // 4. Play incoming audio from the API
+        function playAudioChunk(arrayBuffer) {
+            try {
+                if (!audioContext) return;
+
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+
+                // --- NEW: Safe-Buffer Alignment ---
+                // If the network fragments a chunk into an odd number of bytes, 
+                // Int16Array will crash. This safely trims the corrupted trailing byte.
+                let safeBuffer = arrayBuffer;
+                if (safeBuffer.byteLength % 2 !== 0) {
+                    safeBuffer = safeBuffer.slice(0, safeBuffer.byteLength - 1);
+                }
+                if (safeBuffer.byteLength === 0) return;
+
+                // 1. Convert incoming raw 16-bit PCM (arrayBuffer) to Float32
+                const pcm16Data = new Int16Array(safeBuffer);
+                const float32Data = new Float32Array(pcm16Data.length);
+                for (let i = 0; i < pcm16Data.length; i++) {
+                    float32Data[i] = pcm16Data[i] / 32768.0;
+                }
+
+                // 2. Create the AudioBuffer (Gemini Live API outputs at 24kHz)
+                const sampleRate = 24000; 
+                const audioBuffer = audioContext.createBuffer(1, float32Data.length, sampleRate);
+                audioBuffer.copyToChannel(float32Data, 0);
+
+                // 3. Create the source and connect it
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer; 
+
+                // Attach AI Analyzer
+                if (!aiAnalyser) {
+                    aiAnalyser = audioContext.createAnalyser();
+                    aiAnalyser.fftSize = 256;
+                    dataArrayAi = new Uint8Array(aiAnalyser.frequencyBinCount);
+                    aiAnalyser.connect(audioContext.destination); 
+                }
+                
+                source.connect(aiAnalyser); 
+
+                // 4. Schedule gapless playback
+                const currentTime = audioContext.currentTime;
+                if (nextPlayTime < currentTime) {
+                    nextPlayTime = currentTime + 0.05; 
+                }
+
+                activeSources.push(source);
+                source.onended = () => {
+                    activeSources = activeSources.filter(s => s !== source);
+                };
+
+                source.start(nextPlayTime);
+                nextPlayTime += audioBuffer.duration; 
+
+            } catch (err) {
+                console.error("🚨 Audio Playback Error:", err);
+            }
+        }
+
+        function stopSession() {
+            if (websocket) websocket.close();
+            
+            // Turn off the microphone hardware light
+            if (microphone) {
+                microphone.getTracks().forEach(track => track.stop());
+            }
+
+            // --- NEW: Nuke the AudioContext to kill the Zombie Worklet! ---
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null; 
+            }
+            // --------------------------------------------------------------
+
+            // Stop the glowing orb animation loop 
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            
+            // Reset orb to idle state immediately
+            orb.style.transform = `scale(1)`;
+            orb.style.background = 'linear-gradient(135deg, #e8eaed, #dadce0)';
+            orb.style.boxShadow = `0 0 20px rgba(0, 0, 0, 0.1)`;
+            
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            log("Session stopped.");
+        }
+
+        function visualize() {
+            if (!audioContext) return;
+            animationFrameId = requestAnimationFrame(visualize);
+
+            let userVolume = 0;
+            let aiVolume = 0;
+
+            // Calculate average volume for the microphone (User)
+            if (userAnalyser) {
+                userAnalyser.getByteFrequencyData(dataArrayUser);
+                let sum = 0;
+                for (let i = 0; i < dataArrayUser.length; i++) sum += dataArrayUser[i];
+                userVolume = sum / dataArrayUser.length;
+            }
+
+            // Calculate average volume for the playback (AI)
+            if (aiAnalyser) {
+                aiAnalyser.getByteFrequencyData(dataArrayAi);
+                let sum = 0;
+                for (let i = 0; i < dataArrayAi.length; i++) sum += dataArrayAi[i];
+                aiVolume = sum / dataArrayAi.length;
+            }
+
+            // The AI speaking takes visual priority
+            if (aiVolume > 5) {
+                // Scale from 1.0 to 1.5 based on loudness
+                let scale = 1 + (aiVolume / 255) * 0.8;
+                orb.style.transform = `scale(${scale})`;
+                // Gemini Blue Glow
+                orb.style.background = 'linear-gradient(135deg, #4285f4, #8ab4f8)';
+                orb.style.boxShadow = `0 0 ${20 + aiVolume}px rgba(66, 133, 244, 0.8)`;
+            } 
+            // Otherwise, show the user speaking
+            else if (userVolume > 5) {
+                let scale = 1 + (userVolume / 255) * 0.6;
+                orb.style.transform = `scale(${scale})`;
+                // User Green Glow
+                orb.style.background = 'linear-gradient(135deg, #34a853, #81c995)';
+                orb.style.boxShadow = `0 0 ${20 + userVolume}px rgba(52, 168, 83, 0.8)`;
+            } 
+            // Idle State
+            else {
+                orb.style.transform = `scale(1)`;
+                orb.style.background = 'linear-gradient(135deg, #e8eaed, #dadce0)';
+                orb.style.boxShadow = `0 0 20px rgba(0, 0, 0, 0.1)`;
+            }
+        }
+
+        startBtn.addEventListener('click', startSession);
+        stopBtn.addEventListener('click', stopSession);
+    </script>
+</body>
+</html>
