@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Live Copilot",
+  "version": "1.0",
+  "description": "An autonomous AI web agent powered by Gemini Live.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "offscreen" 
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "ws://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Start Copilot"
+  }
+}

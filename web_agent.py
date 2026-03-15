@@ -215,24 +215,34 @@ async def execute_analyze_ui(page):
     return image_bytes, elements_map
 
 async def execute_click(page, element_id, elements_map):
-    if element_id in elements_map:
-        x, y = elements_map[element_id]['x'], elements_map[element_id]['y']
+    target_id = str(element_id)
+    if target_id in elements_map:
+        x, y = elements_map[target_id]['x'], elements_map[target_id]['y']
+        print(f"🖱️ Playwright clicking ID {target_id} at X:{x}, Y:{y}")
+        
         await page.mouse.move(x, y, steps=10)
-        await page.mouse.down()
-        await page.mouse.up()
+        await asyncio.sleep(0.1)
+        
+        # THE FIX: Native click with a 150ms delay to simulate a real human finger
+        await page.mouse.click(x, y, delay=150) 
+        
         await asyncio.sleep(1.5)
         return True
+        
+    print(f"❌ Click Failed: Box {target_id} not found on screen!")
     return False
 
 async def execute_type(page, element_id, text, elements_map):
-    if element_id not in elements_map:
-        print(f"❌ Type Failed: AI tried to type in box {element_id}, but it is not on the screen!")
+    target_id = str(element_id)
+    if target_id not in elements_map:
+        print(f"❌ Type Failed: AI tried to type in box {target_id}, but it is not on the screen!")
         return False
 
-    x, y = elements_map[element_id]['x'], elements_map[element_id]['y']
+    x, y = elements_map[target_id]['x'], elements_map[target_id]['y']
+    print(f"🖱️ Playwright targeting ID {target_id} at X:{x}, Y:{y} for typing...")
     
     await page.mouse.move(x, y, steps=10)
-    await page.mouse.click(x, y, click_count=1)
+    await page.mouse.click(x, y, delay=150)
     await asyncio.sleep(0.5)
 
     await page.keyboard.press("Control+A") 
@@ -240,7 +250,7 @@ async def execute_type(page, element_id, text, elements_map):
     await page.keyboard.press("Backspace")
     await asyncio.sleep(0.2)
 
-    print(f"⌨️ Typing '{text}' into element {element_id}...")
+    print(f"⌨️ Typing '{text}' into element {target_id}...")
     await page.keyboard.type(text, delay=100)
     await asyncio.sleep(1.5) 
     return True
