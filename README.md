@@ -40,6 +40,6 @@ Run the script you just edited.
 You are ready to fly.
 1. Navigate to a complex website (we recommend **Trip.com**).
 2. Click the Astra extension icon in your Chrome toolbar.
-3. The 3D Siri orb will appear in the bottom right corner, indicating the voice-link is active.
+3. The 3D orb will appear in the bottom right corner, indicating the voice-link is active.
 4. Speak naturally (e.g., *"Astra, find me the cheapest direct flight from Singapore to Tokyo for next week"*). 
 5. Take your hands off the mouse and watch Astra drive.
