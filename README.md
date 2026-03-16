@@ -1,4 +1,4 @@
-## 🛠️ Spin-Up Instructions for Judges (Reproducibility)
+## 🛠️ Spin-Up Instructions
 
 Because Astra physically drives the browser using raw hardware-level execution, it **must** be run locally on your machine. We have automated the entire startup process into a single script.
 
