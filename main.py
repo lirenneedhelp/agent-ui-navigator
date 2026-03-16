@@ -1,12 +1,10 @@
 import asyncio
-import base64
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from google import genai
 from google.genai import types
 from playwright.async_api import async_playwright
 
-# THE FIX: Imported the missing scroll and extract tools
 from web_agent import agent_tools, execute_click, execute_type, execute_analyze_ui, execute_scroll, execute_extract_text 
 
 load_dotenv()
@@ -44,9 +42,9 @@ class HybridAgentSession:
             tools=[agent_tools],
             system_instruction=types.Content(parts=[
                 types.Part.from_text(text="""
-                You are an advanced Visual Co-Pilot. You have direct control over the user's active browser tab.
+                Your Name is Astra. You are an advanced Visual Co-Pilot. You have direct control over the user's active browser tab.
                 
-                1. Always call analyze_ui FIRST to get the screen context.
+                1. Always call analyze_ui FIRST before you perform any tool calls.
                 2. Use click_element and type_text to navigate. 
                 
                 COMPLEX UI NAVIGATION & ANTI-BATCHING RULE:
@@ -59,18 +57,40 @@ class HybridAgentSession:
                 3. Find the ID of the TRUE text input field inside the new modal, and call type_text on that new ID. STOP AND WAIT.
                 4. Call analyze_ui again to see the autocomplete dropdown list. STOP AND WAIT.
                 5. Call click_element on the correct city from the dropdown.
+                
+                🛑 ANTI-LOOP & ERROR RECOVERY PROTOCOL (CRITICAL!):
+                - If you call a tool and receive a "ai_interrupted" or "failed" status, DO NOT attempt to call the exact same tool with the exact same ID again.
+                - If the page behaves unexpectedly, or you cannot find the element you need after calling analyze_ui, STOP IMMEDIATELY. 
+                - Do NOT guess IDs. Do NOT spam tool calls. 
+                - If you are stuck, simply speak to the user using audio, explain what is blocking you (e.g., "I can't find the search button"), and ask them how they want to proceed.
+                                     
+                If the user says "stop", "wait", or interrupts you, IMMEDIATELY halt your current plan, do not call any tools, and ask the user what they would like to do next.                 
                 """)
             ])
         )
         
-        async with self.client.aio.live.connect(model="gemini-live-2.5-flash-native-audio", config=config) as self.session:
-            print("🟢 Gemini Live API Connected. Waiting for voice commands...")
+        try:
+            async with self.client.aio.live.connect(model="gemini-live-2.5-flash-native-audio", config=config) as self.session:
+                print("🟢 Gemini Live API Connected. Waiting for voice commands...")
 
-            tasks = asyncio.gather(
-                self.listen_to_extension(),
-                self.listen_to_gemini()
-            )
-            await tasks
+                ext_task = asyncio.create_task(self.listen_to_extension())
+                gemini_task = asyncio.create_task(self.listen_to_gemini())
+
+                # If either the extension drops OR Gemini drops, kill the session
+                await asyncio.wait(
+                    [ext_task, gemini_task], 
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                print("🛑 Session ended. Shutting down active tasks...")
+                ext_task.cancel()
+                gemini_task.cancel()
+                
+        finally:
+            # Prevent the memory leak! Close Playwright gracefully.
+            if self.playwright:
+                await self.playwright.stop()
+                print("🧹 Playwright instance cleaned up.")
 
     async def listen_to_extension(self):
         try:
@@ -88,27 +108,19 @@ class HybridAgentSession:
             while True:
                 async for response in self.session.receive():
                     
-                    # 1. HARDWARE KILL SWITCH: Tool Call Cancellation
+                    # 1. HARDWARE KILL SWITCH (Modified: Do NOT cancel mouse)
                     tool_cancellation = getattr(response, 'tool_call_cancellation', None)
                     if tool_cancellation:
-                        print(f"🛑 AI cancelled pending tool calls!")
-                        await self.ws.send_json({"status": "ai_interrupted"}) # Flush audio just in case
-                        
-                        if self.active_tool_task and not self.active_tool_task.done():
-                            self.active_tool_task.cancel()
-                            print("🛑 Aborted ongoing Playwright action due to AI tool cancellation!")
+                        print(f"🛑 AI attempted to cancel tool! (Ignored to protect physical mouse execution)")
+                        await self.ws.send_json({"status": "ai_interrupted"}) 
                         continue
 
                     server_content = getattr(response, 'server_content', None)
                     
-                    # 2. AUDIO KILL SWITCH: Speech Interruption
+                    # 2. AUDIO KILL SWITCH (Modified: Do NOT cancel mouse)
                     if server_content and getattr(server_content, 'interrupted', False):
-                        print("🛑 AI Interrupted by user! Flushing audio queue...")
+                        print("🛑 Audio Barge-in detected! Flushing audio queue, but letting mouse finish...")
                         await self.ws.send_json({"status": "ai_interrupted"})
-                        
-                        if self.active_tool_task and not self.active_tool_task.done():
-                            self.active_tool_task.cancel()
-                            print("🛑 Aborted ongoing Playwright action due to speech interruption!")
                         continue 
                     
                     # 3. Audio Streaming
@@ -117,13 +129,23 @@ class HybridAgentSession:
                             if part.inline_data and part.inline_data.data:
                                 await self.ws.send_bytes(part.inline_data.data)
 
-                    # 4. BACKGROUND TOOL EXECUTION
+                    # 4. BACKGROUND TOOL EXECUTION (The Execution Lock)
                     tool_call = getattr(response, 'tool_call', None)
                     if tool_call:
-                        # Only start a new task if we aren't already running one, or cancel the old one safely
+                        # THE FIX: If a tool is currently running, REJECT overlapping calls
                         if self.active_tool_task and not self.active_tool_task.done():
-                             self.active_tool_task.cancel()
+                            print("⚠️ Gemini is impatient! Rejecting overlapping call to protect current execution.")
+                            busy_responses = []
+                            for fc in tool_call.function_calls:
+                                busy_responses.append(types.FunctionResponse(
+                                    name=fc.name,
+                                    id=fc.id,
+                                    response={"status": "failed", "error": "SYSTEM WARNING: I am currently executing your previous command. Wait for the screenshot before sending new commands."}
+                                ))
+                            await self.session.send_tool_response(function_responses=busy_responses)
+                            continue
                         
+                        # Otherwise, safely start the hardware execution
                         self.active_tool_task = asyncio.create_task(self.execute_tool_call(tool_call))
                                 
         except Exception as e:
@@ -149,12 +171,19 @@ class HybridAgentSession:
                     elif fc.name == "click_element":
                         target_id = str(int(args_dict["element_id"]))
                         success = await execute_click(self.page, target_id, self.elements_map)
-                        if not success: response_data = {"status": "failed", "error": "ID not found"}
+                        if success:
+                            # Remind the AI that the page changed!
+                            response_data = {"status": "success", "message": "Click successful. The page UI has likely changed. You MUST call analyze_ui to refresh your vision before clicking anything else."}
+                        else: 
+                            response_data = {"status": "failed", "error": f"CRITICAL ERROR: Box ID {target_id} is not valid or no longer on screen. You are acting on stale visual data. You MUST call analyze_ui immediately to get fresh IDs."}
 
                     elif fc.name == "type_text":
                         target_id = str(int(args_dict["element_id"]))
                         success = await execute_type(self.page, target_id, args_dict["text"], self.elements_map)
-                        if not success: response_data = {"status": "failed", "error": "ID not found"}
+                        if success:
+                            response_data = {"status": "success", "message": "Text typed successfully. The page UI has likely changed. Call analyze_ui to see the new autocomplete dropdowns."}
+                        else: 
+                            response_data = {"status": "failed", "error": f"CRITICAL ERROR: Box ID {target_id} is not valid. The UI has changed. Call analyze_ui to refresh your vision."}
 
                     elif fc.name == "scroll_page":
                         await execute_scroll(self.page, args_dict["direction"])
@@ -189,6 +218,30 @@ class HybridAgentSession:
         # --- NEW: Catch the Kill Switch ---
         except asyncio.CancelledError:
             print("🛑 Playwright task was killed mid-execution by user interruption.")
+            async def cleanup_and_abort():
+                # 1. Force Gemini to drop the current thought process
+                abort_responses = []
+                for fc in tc.function_calls:
+                    abort_responses.append(types.FunctionResponse(
+                        name=fc.name,
+                        id=fc.id,
+                        response={"status": "ai_interrupted", "message": "CRITICAL: User interrupted the action. STOP your current task immediately and listen to the new voice command."}
+                    ))
+                
+                if abort_responses:
+                    try:
+                        await self.session.send_tool_response(function_responses=abort_responses)
+                    except Exception as e:
+                        pass # Ignore if session is already closed
+                        
+                # 2. Wipe any yellow boxes that got stuck on the screen if analyze_ui was killed
+                try:
+                    await self.page.evaluate("document.querySelectorAll('.ai-som-label').forEach(el => el.remove());")
+                except Exception:
+                    pass
+
+            # Fire and forget the cleanup task
+            asyncio.create_task(cleanup_and_abort())
             return # Safely exit without sending a tool response, the turn is dead.
 
 @app.websocket("/ws/stream")

@@ -48,55 +48,58 @@ function startSession() {
                 });
                 activeSources = [];
                 if (audioContext) nextPlayTime = audioContext.currentTime;
-                return; // Stop processing this message
+                return; 
             }
 
-            chrome.runtime.sendMessage({ action: "FORWARD_TO_TAB", payload: msg }, (response) => {
-                
-                if (response && msg.action === "analyze_ui") {
-                    // Ask background.js for the screenshot
-                    chrome.runtime.sendMessage({ action: "TAKE_SCREENSHOT" }, (bgResponse) => {
-                        response.screenshot = bgResponse.screenshot;
-                        websocket.send(JSON.stringify(response));
-                    });
-                } 
-                else if (response) {
-                    // For all other tools, just send the success status
-                    websocket.send(JSON.stringify(response));
-                }
-                
-            });
-            // -------------------------------------------------------------------------
+            // Forward the volume updates to the orb UI
+            chrome.runtime.sendMessage({ action: "FORWARD_TO_TAB", payload: msg });
             
         } else {
+            // It's binary audio data, play Astra's voice!
             playAudioChunk(event.data);
         }
     };
 }
 
 async function startMicrophone() {
+    console.log("🎙️ 1. startMicrophone() triggered.");
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
-        });
         
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        
+        console.log("✅ 2. Microphone stream acquired! Active:", stream.active);
+        
+        // Force the audio context to wake up just in case Chrome suspended it
+        if (audioContext.state === 'suspended') {
+            console.log("⚠️ AudioContext is suspended. Waking it up...");
+            await audioContext.resume();
+        }
+        console.log("🔊 3. AudioContext state:", audioContext.state);
+
         const source = audioContext.createMediaStreamSource(stream);
         await audioContext.audioWorklet.addModule(`pcm-worker.js?t=${Date.now()}`);
         const workletNode = new AudioWorkletNode(audioContext, 'pcm-worker');
+
+        console.log("🌐 4. WebSocket status before sending:", websocket ? websocket.readyState : "WEBSOCKET IS NULL");
 
         workletNode.port.onmessage = (event) => {
             const pcm16Buffer = event.data;
             if (websocket && websocket.readyState === WebSocket.OPEN && pcm16Buffer.byteLength > 0) {
                 websocket.send(pcm16Buffer); 
+            } else if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                // If the socket is dead, flood the console so we know!
+                console.warn("🚫 Audio dropping! WebSocket is not OPEN. ReadyState:", websocket ? websocket.readyState : "NULL");
             }
         };
 
         source.connect(workletNode);
         workletNode.connect(audioContext.destination);
+        
+        console.log("🚀 5. Audio routing complete. Listening...");
     } catch (err) {
         console.error("Microphone Error:", err);
-        // --- NEW: If Chrome auto-dismisses the invisible prompt, open the Setup page ---
         if (err.name === 'NotAllowedError' || err.message.includes('dismissed')) {
+            console.log("🔄 Triggering setup page...");
             chrome.runtime.sendMessage({ action: "OPEN_SETUP_PAGE" });
         }
     }

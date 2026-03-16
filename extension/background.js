@@ -113,6 +113,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     if (message.action === "OPEN_SETUP_PAGE") {
         chrome.tabs.create({ url: chrome.runtime.getURL("setup.html") }); 
+        sendResponse({ status: "opened" }); // ✅ THE FIX: We fulfill the promise!
         return true; 
     }
 
@@ -120,7 +121,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             if (tabs && tabs[0]) {
                 chrome.tabs.sendMessage(tabs[0].id, message.payload, (tabResponse) => {
-                    // THE FIX: Catch empty tabs and disconnected content scripts!
+                    // Catch empty tabs and disconnected content scripts!
                     if (chrome.runtime.lastError) {
                         sendResponse({ status: "failed", error: chrome.runtime.lastError.message });
                     } else {
@@ -133,16 +134,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         return true; 
     }
+});
 
-    if (message.action === "TAKE_SCREENSHOT") {
-        chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 60 }, (dataUrl) => {
-            // THE FIX: Safely handle screenshot failures
-            if (chrome.runtime.lastError) {
-                sendResponse({ screenshot: null, error: chrome.runtime.lastError.message });
-            } else {
-                sendResponse({ screenshot: dataUrl });
-            }
-        });
-        return true; 
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+    if (reason === 'install') {
+        chrome.tabs.create({ url: 'setup.html' });
     }
 });

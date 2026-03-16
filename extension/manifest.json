@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Gemini Live Copilot",
+  "name": "Astra",
   "version": "1.0",
   "description": "An autonomous AI web agent powered by Gemini Live.",
   "permissions": [

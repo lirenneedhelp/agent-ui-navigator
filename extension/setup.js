@@ -1,17 +1,27 @@
-document.getElementById('authBtn').addEventListener('click', async () => {
+document.getElementById('auth-btn').addEventListener('click', async () => {
+    const statusText = document.getElementById('status');
+    const btn = document.getElementById('auth-btn');
+    
     try {
-        // This triggers the native Chrome "Allow Microphone" popup!
+        // Request the microphone
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         
-        // Turn off the hardware light immediately after getting permission
+        // If successful, update UI
+        btn.style.display = 'none';
+        statusText.innerText = "✅ Voice Link Established. Closing setup...";
+        statusText.style.color = "#3fb950";
+        
+        // Instantly release the microphone so we don't keep the red recording dot on needlessly
         stream.getTracks().forEach(track => track.stop());
         
-        // Update the UI
-        document.body.innerHTML = `
-            <h2>✅ Microphone Granted!</h2>
-            <p style="font-size: 18px;">You can safely close this tab.<br><br>Click the <b>Gemini Extension Icon</b> in your toolbar to start the Copilot.</p>
-        `;
+        // Auto-close the tab after 1.5 seconds so the judge can read the success message
+        setTimeout(() => {
+            window.close();
+        }, 1500);
+
     } catch (err) {
-        alert("Error getting permission: " + err.message);
+        // If they deny it or there is an error
+        statusText.innerText = "❌ Microphone access denied. Astra cannot hear you.";
+        statusText.style.color = "#f85149"; // Error red
     }
 });

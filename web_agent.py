@@ -207,10 +207,10 @@ async def execute_analyze_ui(page):
             return map;
         }
     """)
-    
-    PATH = "screenshots"
-    image_bytes = await page.screenshot(path=f"{PATH}/marked.jpg", type="jpeg", quality=60)
+
+    image_bytes = await page.screenshot(type="jpeg", quality=60)
     await page.evaluate("document.querySelectorAll('.ai-som-label').forEach(el => el.remove());")
+    
         
     return image_bytes, elements_map
 

@@ -1,18 +1,83 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>Copilot Setup</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astra | Voice Link Initialization</title>
     <style>
-        body { font-family: system-ui, sans-serif; text-align: center; padding: 100px; background: #f8f9fa; }
-        button { padding: 15px 30px; font-size: 18px; cursor: pointer; background: #4285f4; color: white; border: none; border-radius: 8px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        button:hover { background: #3367d6; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .container {
+            background: #161b22;
+            padding: 50px 40px;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            box-shadow: 0 0 40px rgba(0, 225, 255, 0.1);
+            max-width: 400px;
+        }
+        .orb-icon {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 30% 30%, #ffffff 0%, #4285f4 20%, #1967d2 45%, #8e24aa 75%, #311b92 95%);
+            margin: 0 auto 20px;
+            box-shadow: inset -5px -5px 10px rgba(0,0,0,0.7), inset 5px 5px 10px rgba(255,255,255,0.8), 0 0 15px rgba(0, 225, 255, 0.6);
+        }
+        h1 {
+            color: #ffffff;
+            font-size: 1.8rem;
+            margin-bottom: 10px;
+        }
+        p {
+            color: #8b949e;
+            font-size: 1rem;
+            margin-bottom: 30px;
+            line-height: 1.5;
+        }
+        .btn {
+            background-color: #238636;
+            color: #ffffff;
+            border: none;
+            padding: 14px 24px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(35, 134, 54, 0.4);
+        }
+        .btn:hover {
+            background-color: #2ea043;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(46, 160, 67, 0.6);
+        }
+        #status {
+            margin-top: 20px;
+            font-weight: bold;
+            font-size: 0.9rem;
+            min-height: 20px;
+        }
     </style>
 </head>
 <body>
-    <h2>Gemini Copilot Needs Your Microphone 🎙️</h2>
-    <p>Because the AI runs invisibly in the background, Chrome requires you to grant microphone access here first.</p>
-    <button id="authBtn">Grant Microphone Access</button>
-    
+
+    <div class="container">
+        <div class="orb-icon"></div>
+        <h1>Initialize Astra</h1>
+        <p>Astra requires microphone access to establish the secure voice-link and communicate with the Gemini Live API.</p>
+        
+        <button id="auth-btn" class="btn">Allow Microphone</button>
+        <div id="status"></div>
+    </div>
     <script src="setup.js"></script>
 </body>
 </html>
